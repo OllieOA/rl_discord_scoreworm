@@ -37,11 +37,15 @@ def _preprocess(frame: np.ndarray, x0: int, x1: int) -> np.ndarray:
     bw = cv2.resize(bw, (bw.shape[1] * _SCALE, bw.shape[0] * _SCALE),
                     interpolation=cv2.INTER_NEAREST)
     kernel = np.ones((_DILATE_K, _DILATE_K), np.uint8)
-    bw = cv2.dilate(bw, kernel, iterations=_DILATE_I)
-    mask = np.zeros_like(bw)
+    return cv2.dilate(bw, kernel, iterations=_DILATE_I)
+
+
+def _apply_score_mask(img: np.ndarray) -> np.ndarray:
+    """Zero out everything outside the expected digit bounding box."""
+    mask = np.zeros_like(img)
     mask[_SCORE_MASK_Y:_SCORE_MASK_Y + _SCORE_MASK_H,
          _SCORE_MASK_X:_SCORE_MASK_X + _SCORE_MASK_W] = 255
-    return cv2.bitwise_and(bw, mask)
+    return cv2.bitwise_and(img, mask)
 
 
 def _load_templates(region: str) -> dict[str, np.ndarray]:
@@ -138,7 +142,7 @@ def _read_score(frame: np.ndarray, x_range: tuple[int, int],
     """Read a single team's score from the given x region."""
     if not templates:
         return None
-    img = _preprocess(frame, *x_range)
+    img = _apply_score_mask(_preprocess(frame, *x_range))
     digits = _find_all_digits(img, templates)
     if not digits:
         return None

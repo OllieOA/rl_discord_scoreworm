@@ -49,9 +49,14 @@ def preprocess(frame: np.ndarray, x0: int, x1: int) -> np.ndarray:
                     interpolation=cv2.INTER_NEAREST)
     kernel = np.ones((DILATE_K, DILATE_K), np.uint8)
     bw = cv2.dilate(bw, kernel, iterations=DILATE_I)
-    mask = np.zeros_like(bw)
+    return apply_score_mask(bw)
+
+
+def apply_score_mask(img: np.ndarray) -> np.ndarray:
+    """Zero out everything outside the expected digit bounding box."""
+    mask = np.zeros_like(img)
     mask[MASK_Y:MASK_Y + MASK_H, MASK_X:MASK_X + MASK_W] = 255
-    return cv2.bitwise_and(bw, mask)
+    return cv2.bitwise_and(img, mask)
 
 
 def main():
