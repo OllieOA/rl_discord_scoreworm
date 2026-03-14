@@ -16,26 +16,36 @@ TIMER_X  = (110, 370)
 ORANGE_X = (370, 480)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pre-processing parameters — must match capture_templates.py exactly
+# Pre-processing parameters — must match process_templates.py exactly
 _SCALE      = 4
 _THRESHOLD  = 128
 _DILATE_K   = 4
 _DILATE_I   = 2
 
+# Score digit bounding box (4× scaled space) — must match process_templates.py exactly
+_SCORE_MASK_X = 62
+_SCORE_MASK_Y = 62
+_SCORE_MASK_W = 330
+_SCORE_MASK_H = 330
+
 
 def _preprocess(frame: np.ndarray, x0: int, x1: int) -> np.ndarray:
-    """Crop, greyscale, binarise, upscale, dilate — same pipeline as template capture."""
+    """Crop, greyscale, binarise, upscale, dilate — same pipeline as process_templates.py."""
     crop = frame[:, x0:x1]
     grey = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
     _, bw = cv2.threshold(grey, _THRESHOLD, 255, cv2.THRESH_BINARY)
     bw = cv2.resize(bw, (bw.shape[1] * _SCALE, bw.shape[0] * _SCALE),
                     interpolation=cv2.INTER_NEAREST)
     kernel = np.ones((_DILATE_K, _DILATE_K), np.uint8)
-    return cv2.dilate(bw, kernel, iterations=_DILATE_I)
+    bw = cv2.dilate(bw, kernel, iterations=_DILATE_I)
+    mask = np.zeros_like(bw)
+    mask[_SCORE_MASK_Y:_SCORE_MASK_Y + _SCORE_MASK_H,
+         _SCORE_MASK_X:_SCORE_MASK_X + _SCORE_MASK_W] = 255
+    return cv2.bitwise_and(bw, mask)
 
 
 def _load_templates(region: str) -> dict[str, np.ndarray]:
-    """Load all saved templates for a region, keyed by label."""
+    """Load all saved templates for a region, keyed by filename stem."""
     path = os.path.join(TEMPLATES_DIR, region)
     templates = {}
     if not os.path.isdir(path):
@@ -49,9 +59,27 @@ def _load_templates(region: str) -> dict[str, np.ndarray]:
     return templates
 
 
+def _load_score_templates(side: str) -> dict[str, np.ndarray]:
+    """Load score templates for one side, keyed by digit string ("0"–"9")."""
+    path = os.path.join(TEMPLATES_DIR, "score")
+    templates = {}
+    if not os.path.isdir(path):
+        return templates
+    suffix = f"_{side}"
+    for fname in os.listdir(path):
+        stem, ext = os.path.splitext(fname)
+        if ext.lower() == ".png" and stem.endswith(suffix):
+            digit = stem[: -len(suffix)]
+            img = cv2.imread(os.path.join(path, fname), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                templates[digit] = img
+    return templates
+
+
 # Load templates once at import time
-_TIMER_TEMPLATES = _load_templates("timer")
-_SCORE_TEMPLATES = _load_templates("score")
+_TIMER_TEMPLATES        = _load_templates("timer")
+_SCORE_LEFT_TEMPLATES  = _load_score_templates("left")
+_SCORE_RIGHT_TEMPLATES = _load_score_templates("right")
 
 
 def _best_match(region_img: np.ndarray, templates: dict[str, np.ndarray]) -> tuple[str | None, float]:
@@ -105,12 +133,13 @@ def _find_all_digits(region_img: np.ndarray, templates: dict[str, np.ndarray],
     return suppressed
 
 
-def _read_score(frame: np.ndarray, x_range: tuple[int, int]) -> int | None:
+def _read_score(frame: np.ndarray, x_range: tuple[int, int],
+                templates: dict[str, np.ndarray]) -> int | None:
     """Read a single team's score from the given x region."""
-    if not _SCORE_TEMPLATES:
+    if not templates:
         return None
     img = _preprocess(frame, *x_range)
-    digits = _find_all_digits(img, _SCORE_TEMPLATES)
+    digits = _find_all_digits(img, templates)
     if not digits:
         return None
     number = "".join(label for _, label in digits if label.isdigit())
@@ -164,8 +193,8 @@ class HudReading:
 def read_hud(frame: np.ndarray) -> HudReading:
     """Read blue score, orange score, and remaining time from a HUD frame."""
     return HudReading(
-        blue=_read_score(frame, BLUE_X),
-        orange=_read_score(frame, ORANGE_X),
+        blue=_read_score(frame, BLUE_X, _SCORE_LEFT_TEMPLATES),
+        orange=_read_score(frame, ORANGE_X, _SCORE_RIGHT_TEMPLATES),
         time=_read_timer(frame),
     )
 
@@ -177,7 +206,7 @@ if __name__ == "__main__":
     frame = grab_frame()
     reading = read_hud(frame)
     print(f"Blue: {reading.blue}  Orange: {reading.orange}  Time: {reading.time}s")
-    if not _TIMER_TEMPLATES and not _SCORE_TEMPLATES:
+    if not _TIMER_TEMPLATES and not _SCORE_LEFT_TEMPLATES and not _SCORE_RIGHT_TEMPLATES:
         print("\nNo templates found. Run capture_templates.py first:")
         print("  python capture_templates.py --region timer")
         print("  python capture_templates.py --region score")
