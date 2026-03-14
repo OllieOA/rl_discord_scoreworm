@@ -69,7 +69,7 @@ def _best_match(region_img: np.ndarray, templates: dict[str, np.ndarray]) -> tup
 
 
 def _find_all_digits(region_img: np.ndarray, templates: dict[str, np.ndarray],
-                     min_spacing: int = 150) -> list[tuple[int, str]]:
+                     min_spacing: int = 80) -> list[tuple[int, str]]:
     """
     Find all digit occurrences in a region using template matching.
     Returns a list of (x_position, label) sorted left to right.

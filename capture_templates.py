@@ -1,24 +1,32 @@
 """
 Score template capture utility.
 
-Captures the blue score region every 20 seconds.  Score goals on one side
-incrementally — capture 0 = score 0, capture 1 = score 1, etc.
+Captures the score region every 20 seconds.  Score goals incrementally —
+capture 0 = score 0, capture 1 = score 1, etc.
+
+Use --side to specify which side of the HUD the score appears on:
+  left  — score is in BLUE_X  (0–110),   player is on Blue team
+  right — score is in ORANGE_X (370–480), player is on Orange team
+
+Capture blue digits on both sides so templates cover both backgrounds.
+For consistency we always capture Blue's score (blue digits on blue background).
 
 Each capture saves:
-  templates/raw/capture_{i}.png  — full raw HUD frame (RGB) for reprocessing
-  templates/score/{i}.png        — preprocessed score crop (skipped if exists)
+  templates/raw/capture_{i}_{side}.png  — full raw HUD frame (RGB) for reprocessing
+  templates/score/{i}.png               — preprocessed score crop (skipped if exists)
 
 To reprocess raw frames into score templates without going in-game:
     python capture_templates.py --from-raw
 
 Usage:
-    python capture_templates.py            # live capture, 10 captures, 20s interval
-    python capture_templates.py --count 9
-    python capture_templates.py --from-raw # reprocess existing raw frames
+    python capture_templates.py --side left            # default
+    python capture_templates.py --side right --count 9
+    python capture_templates.py --from-raw             # reprocess all raw frames
 """
 
 import argparse
 import os
+import re
 import time
 
 import cv2
@@ -30,7 +38,10 @@ from capture import grab_frame
 TEMPLATES_DIR = "templates"
 INTERVAL = 20   # seconds between captures
 
-BLUE_X = (0, 110)
+SIDE_X = {
+    "left":  (0, 110),
+    "right": (370, 480),
+}
 
 _SCALE    = 4
 _DILATE_K = 4
@@ -47,10 +58,11 @@ def preprocess(frame: np.ndarray, x0: int, x1: int) -> np.ndarray:
     return cv2.dilate(bw, kernel, iterations=_DILATE_I)
 
 
-def save_score_template(frame: np.ndarray, index: int, score_dir: str) -> str:
+def save_score_template(frame: np.ndarray, index: int, side: str, score_dir: str) -> str:
     score_path = os.path.join(score_dir, f"{index}.png")
     if not os.path.exists(score_path):
-        score_img = preprocess(frame, *BLUE_X)
+        x0, x1 = SIDE_X[side]
+        score_img = preprocess(frame, x0, x1)
         cv2.imwrite(score_path, score_img)
         return "saved"
     return "skipped (already exists)"
@@ -58,21 +70,25 @@ def save_score_template(frame: np.ndarray, index: int, score_dir: str) -> str:
 
 def from_raw(raw_dir: str, score_dir: str) -> None:
     """Reprocess saved raw frames into score templates."""
-    raws = sorted(f for f in os.listdir(raw_dir) if f.startswith("capture_") and f.endswith(".png"))
+    pattern = re.compile(r"^capture_(\d+)_(left|right)\.png$")
+    raws = sorted(f for f in os.listdir(raw_dir) if pattern.match(f))
     if not raws:
         print(f"No raw captures found in {raw_dir}/")
         return
     os.makedirs(score_dir, exist_ok=True)
     for fname in raws:
-        i = int(fname.replace("capture_", "").replace(".png", ""))
+        m = pattern.match(fname)
+        i, side = int(m.group(1)), m.group(2)
         frame = np.array(Image.open(os.path.join(raw_dir, fname)).convert("RGB"))
-        result = save_score_template(frame, i, score_dir)
-        print(f"  capture_{i}  score={result}")
+        result = save_score_template(frame, i, side, score_dir)
+        print(f"  capture_{i}_{side}  score={result}")
     print(f"\nDone. Score templates saved to {score_dir}/")
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--side",     choices=["left", "right"], default="left",
+                        help="which HUD side the score appears on (default: left)")
     parser.add_argument("--count",    type=int, default=10, help="number of live captures")
     parser.add_argument("--interval", type=int, default=INTERVAL, help="seconds between captures")
     parser.add_argument("--from-raw", action="store_true", help="reprocess raw frames instead of capturing live")
@@ -88,18 +104,18 @@ def main():
     os.makedirs(raw_dir, exist_ok=True)
     os.makedirs(score_dir, exist_ok=True)
 
+    print(f"Side: {args.side} — capturing from X={SIDE_X[args.side]}")
     print("Starting in 3 seconds — alt-tab back to Rocket League!")
     time.sleep(3)
 
     for i in range(args.count):
         frame = grab_frame()
 
-        # Always save the full raw frame so captures can be reprocessed later
-        raw_path = os.path.join(raw_dir, f"capture_{i}.png")
+        raw_path = os.path.join(raw_dir, f"capture_{i}_{args.side}.png")
         if not os.path.exists(raw_path):
             cv2.imwrite(raw_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-        result = save_score_template(frame, i, score_dir)
+        result = save_score_template(frame, i, args.side, score_dir)
         print(f"  Capture {i}  score={result}  (score should be {i})")
 
         if i < args.count - 1:
