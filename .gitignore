@@ -212,3 +212,5 @@ sessions/
 logs/
 hud_preview.png
 scoreworm_preview.png
+tests/output/
+tests/fixtures/full_game_session/

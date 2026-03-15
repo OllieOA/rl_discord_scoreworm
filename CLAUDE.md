@@ -67,7 +67,7 @@ capture.py → ocr.py → game_state.py → scoreworm.py → bot.py
 | Module | Responsibility |
 |--------|----------------|
 | `capture.py` | Grabs the HUD region from the centre monitor. Auto-detects the centre screen from a 3-monitor setup by sorting monitors by left-edge position. HUD region: left=1040, top=0, width=480, height=110 (tuned for 2560×1440). |
-| `ocr.py` | Template-matching OCR. Preprocesses frames (greyscale → binarise → 4× upscale → dilate). Tries multiple binarisation thresholds per frame (110/128/150/170/190) and accepts the highest-confidence result — compensates for HUD transparency shifts and the orange panel in overtime. Timer uses **positional zones** on the full timer strip (minute x<380, tens 380–580, ones ≥580 in 4× space); regular-time reads are gated on a colon template match to reject the "OVERTIME" text frame. Scores use per-value template matching (0–99 per side). Returns `HudReading(blue, orange, time)` — fields are `None` if unreadable. |
+| `ocr.py` | Template-matching OCR. Preprocesses frames (greyscale → binarise → 4× upscale → dilate). **Scores** try 5 binarisation thresholds (110/128/150/170/190) and accept the highest-confidence batched NCC result — thresholds ≥170 reject the overtime orange panel background (greyscale ≈158) without a separate code path. **Timer** uses a single threshold (128) with sliding `cv2.matchTemplate` across positional zones (minute x<380, tens 380–580, ones ≥580 in 4× space); regular-time reads are gated on a colon template match (≥0.65) to reject the "OVERTIME" text frame; overtime reads (`+` template detected at ≥0.75) parse `+M:SS` or `+MM:SS`. Returns `HudReading(blue, orange, time)` — fields are `None` if unreadable. ~165ms/call. |
 | `game_state.py` | Polls capture+OCR every 0.5s. State machine: `IDLE → IN_GAME → OVERTIME → (callback) → IDLE`. Logs every probe result and saves the last 50 frames to `logs/`. Fires `on_game_over(goals: list[GoalEvent])` when a game ends. |
 | `scoreworm.py` | Takes a list of `GoalEvent` and returns a PIL Image of the score worm chart. Pure function — no I/O side effects. |
 | `bot.py` | Logs into Discord, starts `GameTracker` in a background thread. Uses `asyncio.run_coroutine_threadsafe` to post the image when `on_game_over` fires. |
@@ -83,7 +83,7 @@ Templates are preprocessed (binarised, 4× scaled, dilated) PNG crops that must 
 | Directory | Contents | How generated |
 |-----------|----------|---------------|
 | `templates/score/` | `0_left.png`–`99_left.png`, `0_right.png`–`99_right.png` — one per score value per side (200 total) | `process_templates.py` (from `templates/raw/`) |
-| `templates/timer/` | `0.png`–`9.png` + `colon.png` | `rebuild_timer_templates.py` (from session snippets) |
+| `templates/timer/` | `0.png`–`9.png` + `colon.png` + `plus.png` | `rebuild_timer_templates.py` (digits/colon from session snippets); `plus.png` extracted manually via connected-components from the `+3:40` overtime fixture |
 | `templates/raw/` | Full raw HUD strips from session recordings, named `capture_{score}_{side}.png` | `extract_session_templates.py` |
 
 ### Session workflow
@@ -111,7 +111,7 @@ Existing curated sessions:
 
 ### Test fixtures
 
-`tests/fixtures/snippet/` contains labelled HUD strip PNGs. Filename format:
+Both fixture directories use the same filename format:
 
 ```
 [desc].[left_score]-[right_score]_[min]-[sec]_[colour].png
@@ -119,12 +119,35 @@ Existing curated sessions:
 
 `colour` is the team shown on the **left** side of the HUD. `n` in any position means not applicable / unreadable.
 
+| Directory | Contents |
+|-----------|----------|
+| `tests/fixtures/snippet/` | HUD-strip crops (480×110) — used for score and timer unit tests |
+| `tests/fixtures/full_screen/` | Full 2560×1440 captures — used for timer and special-case tests; `load_full_screen()` crops to the HUD region automatically |
+
 **These files are protected** — do not rename or delete them without prompting the user to manually verify the correct label. If a test fails, report it and ask the user to inspect the image.
+
+| Directory | Contents |
+|-----------|----------|
+| `tests/fixtures/full_game_session/` | Full 2560×1440 session recordings (PNG sequences) + `annotation.json` per session. **Protected** — committed by user; do not create, modify, or delete any file in this directory under any circumstances. |
+
+Test output (e.g. generated scoreworm images) goes to `tests/output/` which is gitignored. Never write test output into any `tests/fixtures/` subdirectory.
 
 ### Known issues / TODOs
 
-- **OCR speed** — `read_hud` now runs 5 threshold images per call (timer: ~70 matchTemplate ops; scores: 5 matmuls). Still well within the 0.5s polling interval. Further optimisation possible if needed.
-- Team-side detection not implemented — left score always assumed to be Blue
-- Scores > 99 return None (acceptable)
-- `capture_templates.py` is legacy — prefer `record_session.py` + `extract_session_templates.py`
-- 1 xfail: `count_up.10-95_1-13_orange` — '9' template outscores '3' at the ones position; needs '9' template rebuilt from a less ambiguous source
+- **OCR speed** — `read_hud` takes ~165ms: timer ~122ms (10 `cv2.matchTemplate` sliding-window calls at ~11ms each — inherent cost of 1D scan across 440×1040 strip), scores ~41ms (5 threshold × 2 batched matmuls). Well within the 0.5s polling interval. Timer is the bottleneck if further optimisation is needed.
+- **Team-side detection** not implemented — left score always assumed to be Blue
+- **Scores > 99** return None (acceptable)
+- **`capture_templates.py`** is legacy — prefer `record_session.py` + `extract_session_templates.py`
+- **1 xfail:** `count_up.10-95_1-13_orange` — '9' template outscores '3' at the ones position; needs '9' template rebuilt from a less ambiguous source
+
+### Active plans
+
+Plans live in `.claude/plans/`:
+
+| File | Status | Summary |
+|------|--------|---------|
+| `overtime_ocr.md` | **Complete** | Full overtime OCR: `+` detection, `+M:SS`/`+MM:SS` parsing, colon gate, multi-threshold scores |
+| `ocr_improvements.md` | In progress | Batched NCC for scores (done), remaining calibration improvements |
+| `implement_alerter.md` | Not started | Discord alerter integration |
+| `e2e_game_tests.md` | Not started | End-to-end tests replaying full game sessions; annotation generation, state machine replay, scoreworm output |
+| `team_side_detection.md` | Not started | Detect blue/orange on left from HUD panel colour; wire into scoreworm so player's team is always at top |
