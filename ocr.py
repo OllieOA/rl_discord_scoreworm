@@ -378,6 +378,21 @@ class HudReading:
     time:   int | None   # Remaining time in seconds
 
 
+def detect_left_colour(hud_frame: np.ndarray) -> str:
+    """Detect which team colour is on the left side of the HUD.
+
+    Args:
+        hud_frame: RGB numpy array of shape (110, 480) — the full HUD crop.
+
+    Returns:
+        "blue" or "orange"
+    """
+    left_region = hud_frame[:, 0:110, :]        # shape (110, 110, 3), RGB
+    mean_rgb = left_region.mean(axis=(0, 1))    # [R, G, B]
+    # Blue panel: B channel dominant. Orange panel: R channel dominant.
+    return "blue" if mean_rgb[2] > mean_rgb[0] else "orange"
+
+
 def read_hud(frame: np.ndarray) -> HudReading:
     """Read blue score, orange score, and remaining time from a HUD frame."""
     return HudReading(

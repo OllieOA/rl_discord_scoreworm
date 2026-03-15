@@ -29,7 +29,7 @@ from enum import Enum, auto
 import cv2
 
 from capture import grab_frame
-from ocr import HudReading, read_hud
+from ocr import HudReading, detect_left_colour, read_hud
 
 POLL_INTERVAL  = 0.5    # seconds between HUD reads
 GAME_DURATION  = 300    # seconds (5:00)
@@ -52,7 +52,7 @@ class GoalEvent:
 
 @dataclass
 class GameTracker:
-    on_game_over: callable   # called with (goals: list[GoalEvent], end_type: str) when game ends
+    on_game_over: callable   # called with (goals, end_type, colour_on_left) when game ends
 
     _state:              State      = field(default=State.IDLE, init=False)
     _goals:              list       = field(default_factory=list, init=False)
@@ -60,6 +60,7 @@ class GameTracker:
     _none_streak:        int        = field(default=0, init=False)
     _ot_pending:         bool       = field(default=False, init=False)
     _timer_reached_zero: bool       = field(default=False, init=False)
+    _colour_on_left:     str        = field(default="blue", init=False)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -74,11 +75,12 @@ class GameTracker:
             end_type = "normal"
         else:
             end_type = "forfeit"
-        self.on_game_over(list(self._goals), end_type)
+        self.on_game_over(list(self._goals), end_type, self._colour_on_left)
         self._goals              = []
         self._prev               = None
         self._ot_pending         = False
         self._timer_reached_zero = False
+        self._colour_on_left     = "blue"
         self._transition(State.IDLE)
 
     def _detect_goal(self, reading: HudReading, game_time: int) -> None:
@@ -96,7 +98,7 @@ class GameTracker:
 
     # ── per-tick logic ───────────────────────────────────────────────────────
 
-    def _tick(self, reading: HudReading) -> None:
+    def _tick(self, reading: HudReading, frame=None) -> None:
         # All-None: track streak; end game at threshold from any non-IDLE state
         if reading.blue is None and reading.orange is None and reading.time is None:
             self._none_streak += 1
@@ -119,6 +121,9 @@ class GameTracker:
             if reading.blue == 0 and reading.orange == 0 and reading.time == GAME_DURATION:
                 self._goals = []
                 self._prev  = reading
+                if frame is not None:
+                    self._colour_on_left = detect_left_colour(frame)
+                    print(f"[team] colour on left detected: {self._colour_on_left}")
                 self._transition(State.IN_GAME)
 
         elif self._state is State.IN_GAME:
@@ -192,15 +197,15 @@ class GameTracker:
                 reading = read_hud(frame)
                 self._log_reading(reading)
                 self._save_frame(frame)
-                self._tick(reading)
+                self._tick(reading, frame)
                 time.sleep(POLL_INTERVAL)
         except KeyboardInterrupt:
             print("\nTracker stopped.")
 
 
 if __name__ == "__main__":
-    def _print_results(goals: list[GoalEvent], end_type: str) -> None:
-        print(f"\n── Game over ({end_type}) ──")
+    def _print_results(goals: list[GoalEvent], end_type: str, colour_on_left: str) -> None:
+        print(f"\n── Game over ({end_type}, {colour_on_left} on left) ──")
         for g in goals:
             mins, secs = divmod(g.game_time, 60)
             ot = " (OT)" if g.game_time > GAME_DURATION else ""
