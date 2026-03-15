@@ -7,7 +7,7 @@ For each session folder under tests/fixtures/full_game_session/:
   - Writes annotation.json into the session folder
 
 Usage:
-    uv run python annotate_sessions.py
+    uv run python tools/annotate_sessions.py
 
 Review each annotation.json before running tests against it.
 """
@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from capture import HUD_HEIGHT, HUD_LEFT, HUD_TOP, HUD_WIDTH
 from ocr import read_hud

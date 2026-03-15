@@ -13,12 +13,16 @@ Side and colour are inferred from the directory name:
   *right* → side=right, colour=orange (blue score is on the right)
 
 Usage:
-    python extract_session_templates.py sessions/left_count_up
-    python extract_session_templates.py sessions/right_count_up
+    uv run python tools/extract_session_templates.py sessions/left_count_up
+    uv run python tools/extract_session_templates.py sessions/right_count_up
 """
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import cv2
 import numpy as np

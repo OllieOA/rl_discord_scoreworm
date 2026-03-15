@@ -13,13 +13,17 @@ Run this whenever the timer templates need refreshing from new capture data.
 Delete templates/timer/*.png first if you want a full rebuild.
 
 Usage:
-    python rebuild_timer_templates.py
-    python rebuild_timer_templates.py --snippet-dir tests/fixtures/snippet
-    python rebuild_timer_templates.py --overwrite   # replace existing templates
+    uv run python tools/rebuild_timer_templates.py
+    uv run python tools/rebuild_timer_templates.py --snippet-dir tests/fixtures/snippet
+    uv run python tools/rebuild_timer_templates.py --overwrite   # replace existing templates
 """
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import cv2
 import numpy as np

@@ -11,7 +11,7 @@ Preprocessing pipeline (must match ocr.py exactly):
 Tune THRESHOLD, SCALE, DILATE_K, DILATE_I here and re-run to experiment.
 
 Usage:
-    python process_templates.py
+    uv run python tools/process_templates.py
 """
 
 import os

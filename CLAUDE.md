@@ -40,13 +40,13 @@ uv run python scoreworm.py           # render a test chart → scoreworm_preview
 uv run python capture.py             # save a HUD screenshot → hud_preview.png
 
 # Template capture workflow (do in-game, one session per side)
-uv run python record_session.py                          # record full-screen frames → sessions/<timestamp>/
-uv run python extract_session_templates.py sessions/left_count_up   # extract snippets + raw crops
-uv run python extract_session_templates.py sessions/right_count_up
-uv run python process_templates.py                       # build score templates from raw crops
+uv run python tools/record_session.py                          # record full-screen frames → sessions/<timestamp>/
+uv run python tools/extract_session_templates.py sessions/left_count_up   # extract snippets + raw crops
+uv run python tools/extract_session_templates.py sessions/right_count_up
+uv run python tools/process_templates.py                       # build score templates from raw crops
 
 # Timer templates (rebuilt from session snippets)
-uv run python rebuild_timer_templates.py --overwrite
+uv run python tools/rebuild_timer_templates.py --overwrite
 
 # Tests — default uses 24 workers (3/4 of CPUs, preserving system headroom)
 uv run pytest                                # all tests, quiet output
@@ -72,10 +72,11 @@ capture.py → ocr.py → game_state.py → scoreworm.py → bot.py
 | `game_state.py` | Polls capture+OCR every 0.5s. State machine: `IDLE → IN_GAME → OVERTIME → (callback) → IDLE`. Corrupt-read guard discards impossible score transitions. OT-pending flag defers OVERTIME transition until the banner frame. Fires `on_game_over(goals: list[GoalEvent])` when 3 consecutive all-None frames are detected. Also exposes `replay(readings)` for testing. |
 | `scoreworm.py` | Takes a list of `GoalEvent` and `end_type` string, returns a PIL Image. Worm stops at last goal on forfeit; extends past 5:00 with a red hatched OT region on overtime. Pure function — no I/O side effects. |
 | `bot.py` | Logs into Discord, starts `GameTracker` in a background thread. Uses `asyncio.run_coroutine_threadsafe` to post the image when `on_game_over` fires. |
-| `record_session.py` | Records full-screen captures to `sessions/<timestamp>/` at a configurable interval (default 1s). Used to capture template source material in-game. |
-| `extract_session_templates.py` | Processes a `sessions/` directory (one file per score, sorted numerically). Saves raw HUD crops to `templates/raw/` and labelled HUD strips to `tests/fixtures/snippet/`. Side is inferred from directory name (`left`/`right`). |
-| `process_templates.py` | Converts `templates/raw/capture_N_{side}.png` files into preprocessed score templates in `templates/score/`. Preprocessing must match `ocr.py` exactly. |
-| `rebuild_timer_templates.py` | Rebuilds `templates/timer/` from session-style snippet fixtures. |
+| `tools/record_session.py` | Records full-screen captures to `sessions/<timestamp>/` at a configurable interval (default 1s). Used to capture template source material in-game. |
+| `tools/extract_session_templates.py` | Processes a `sessions/` directory (one file per score, sorted numerically). Saves raw HUD crops to `templates/raw/` and labelled HUD strips to `tests/fixtures/snippet/`. Side is inferred from directory name (`left`/`right`). |
+| `tools/process_templates.py` | Converts `templates/raw/capture_N_{side}.png` files into preprocessed score templates in `templates/score/`. Preprocessing must match `ocr.py` exactly. |
+| `tools/rebuild_timer_templates.py` | Rebuilds `templates/timer/` from session-style snippet fixtures. |
+| `tools/annotate_sessions.py` | Runs OCR over full-game session recordings and writes `annotation.json` into each session folder. |
 
 ### Template system
 
@@ -83,13 +84,13 @@ Templates are preprocessed (binarised, 4× scaled, dilated) PNG crops that must 
 
 | Directory | Contents | How generated |
 |-----------|----------|---------------|
-| `templates/score/` | `0_left.png`–`99_left.png`, `0_right.png`–`99_right.png` — one per score value per side (200 total) | `process_templates.py` (from `templates/raw/`) |
-| `templates/timer/` | `0.png`–`9.png` + `colon.png` + `plus.png` | `rebuild_timer_templates.py` (digits/colon from session snippets); `plus.png` extracted manually via connected-components from the `+3:40` overtime fixture |
-| `templates/raw/` | Full raw HUD strips from session recordings, named `capture_{score}_{side}.png` | `extract_session_templates.py` |
+| `templates/score/` | `0_left.png`–`99_left.png`, `0_right.png`–`99_right.png` — one per score value per side (200 total) | `tools/process_templates.py` (from `templates/raw/`) |
+| `templates/timer/` | `0.png`–`9.png` + `colon.png` + `plus.png` | `tools/rebuild_timer_templates.py` (digits/colon from session snippets); `plus.png` extracted manually via connected-components from the `+3:40` overtime fixture |
+| `templates/raw/` | Full raw HUD strips from session recordings, named `capture_{score}_{side}.png` | `tools/extract_session_templates.py` |
 
 ### Session workflow
 
-Sessions are recorded in-game with `record_session.py` (one frame per second). After recording, the directory is manually curated: one file per score event, sorted numerically (file at index `i` → score `i`). Then `extract_session_templates.py` processes the directory.
+Sessions are recorded in-game with `tools/record_session.py` (one frame per second). After recording, the directory is manually curated: one file per score event, sorted numerically (file at index `i` → score `i`). Then `tools/extract_session_templates.py` processes the directory.
 
 Existing curated sessions:
 
@@ -108,7 +109,7 @@ Existing curated sessions:
 | `TIMER_X` | 110 – 370 | Match timer |
 | `ORANGE_X` | 370 – 480 | Right team score |
 
-> **Note:** In RL, the local player's team is always shown on the left. If the player is on Orange, Orange appears on the left (`BLUE_X` region). Team-side detection is not yet implemented.
+> **Note:** In RL, the local player's team is always shown on the left. If the player is on Orange, Orange appears on the left (`BLUE_X` region). `detect_left_colour()` in `ocr.py` detects this by comparing mean R vs B channel in the left panel region.
 
 ### Test fixtures
 
@@ -136,9 +137,7 @@ Test output (e.g. generated scoreworm images) goes to `tests/output/` which is g
 ### Known issues / TODOs
 
 - **OCR speed** — `read_hud` takes ~165ms: timer ~122ms (10 `cv2.matchTemplate` sliding-window calls at ~11ms each — inherent cost of 1D scan across 440×1040 strip), scores ~41ms (5 threshold × 2 batched matmuls). Well within the 0.5s polling interval. Timer is the bottleneck if further optimisation is needed.
-- **Team-side detection** not implemented — left score always assumed to be Blue
 - **Scores > 99** return None (acceptable)
-- **`capture_templates.py`** is legacy — prefer `record_session.py` + `extract_session_templates.py`
 - **1 xfail:** `count_up.10-95_1-13_orange` — '9' template outscores '3' at the ones position; needs '9' template rebuilt from a less ambiguous source
 
 ### Active plans
@@ -149,4 +148,4 @@ Plans live in `.claude/plans/`. Completed plans are archived in `.claude/plans/d
 |------|--------|---------|
 | `scoreworm_improvements.md` | **Not started** | Forfeit stop, overtime extension + red hatch, left-team-on-top labels, `end_type` wired through callback |
 | `implement_alerter.md` | Not started | Discord alerter integration |
-| `team_side_detection.md` | Not started | Detect blue/orange on left from HUD panel colour; wire into scoreworm so player's team is always at top |
+| `team_side_detection.md` | **Done** | `detect_left_colour()` in `ocr.py`; wired through `game_state.py` → `on_game_over` → `bot.py` |

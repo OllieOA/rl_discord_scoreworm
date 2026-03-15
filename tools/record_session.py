@@ -5,8 +5,8 @@ Takes a screenshot of the entire Rocket League monitor every second.
 Each run creates a new timestamped session folder under sessions/.
 
 Usage:
-    python record_session.py          # captures every 1s
-    python record_session.py --interval 2
+    uv run python tools/record_session.py          # captures every 1s
+    uv run python tools/record_session.py --interval 2
     Stop with Ctrl+C.
 """
 
