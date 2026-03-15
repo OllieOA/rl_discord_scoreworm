@@ -8,10 +8,9 @@ States:
     GAME_OVER — end condition met; fires on_game_over callback
 
 End conditions:
-    Normal time — timer reaches 0:00 and scores are uneven
-    Overtime    — timer was 0:00 with level scores; next goal ends the game
-                  (RL shows "OVERTIME" text and counts up; OCR returns None
-                   for the timer during this — frames are skipped safely)
+    Any state   — 3 consecutive all-None frames (post-match scoreboard replacing HUD)
+    OT entry    — timer 0:00 with level scores sets _ot_pending; first frame where
+                  scores are readable but timer is None triggers OVERTIME transition
 
 Usage:
     def handle_game_over(goals):
@@ -53,12 +52,14 @@ class GoalEvent:
 
 @dataclass
 class GameTracker:
-    on_game_over: callable   # called with list[GoalEvent] when game ends
+    on_game_over: callable   # called with (goals: list[GoalEvent], end_type: str) when game ends
 
-    _state:       State      = field(default=State.IDLE, init=False)
-    _goals:       list       = field(default_factory=list, init=False)
-    _prev:        HudReading = field(default=None, init=False)
-    _none_streak: int        = field(default=0, init=False)
+    _state:              State      = field(default=State.IDLE, init=False)
+    _goals:              list       = field(default_factory=list, init=False)
+    _prev:               HudReading = field(default=None, init=False)
+    _none_streak:        int        = field(default=0, init=False)
+    _ot_pending:         bool       = field(default=False, init=False)
+    _timer_reached_zero: bool       = field(default=False, init=False)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -67,9 +68,17 @@ class GameTracker:
         self._state = new_state
 
     def _end_game(self) -> None:
-        self.on_game_over(list(self._goals))
-        self._goals = []
-        self._prev  = None
+        if self._state is State.OVERTIME:
+            end_type = "overtime"
+        elif self._timer_reached_zero:
+            end_type = "normal"
+        else:
+            end_type = "forfeit"
+        self.on_game_over(list(self._goals), end_type)
+        self._goals              = []
+        self._prev               = None
+        self._ot_pending         = False
+        self._timer_reached_zero = False
         self._transition(State.IDLE)
 
     def _detect_goal(self, reading: HudReading, game_time: int) -> None:
@@ -88,6 +97,7 @@ class GameTracker:
     # ── per-tick logic ───────────────────────────────────────────────────────
 
     def _tick(self, reading: HudReading) -> None:
+        # All-None: track streak; end game at threshold from any non-IDLE state
         if reading.blue is None and reading.orange is None and reading.time is None:
             self._none_streak += 1
             if self._none_streak >= 3 and self._state is not State.IDLE:
@@ -96,9 +106,15 @@ class GameTracker:
             return
         self._none_streak = 0
 
-        if reading.blue is None or reading.orange is None:
-            return   # partial read — skip
+        # Any-one-None: partial read — check for OVERTIME banner; skip without updating _prev
+        if reading.blue is None or reading.orange is None or reading.time is None:
+            if (self._ot_pending and reading.time is None
+                    and reading.blue is not None and reading.orange is not None):
+                self._ot_pending = False
+                self._transition(State.OVERTIME)
+            return
 
+        # Full reading available
         if self._state is State.IDLE:
             if reading.blue == 0 and reading.orange == 0 and reading.time == GAME_DURATION:
                 self._goals = []
@@ -106,34 +122,40 @@ class GameTracker:
                 self._transition(State.IN_GAME)
 
         elif self._state is State.IN_GAME:
-            if reading.time is None:
-                return   # unreadable timer (e.g. transitional display) — skip
+            # Corrupt-read guard: discard impossible score transitions
+            if self._prev is not None and (
+                reading.blue < self._prev.blue
+                or reading.orange < self._prev.orange
+                or reading.blue > self._prev.blue + 1
+                or reading.orange > self._prev.orange + 1
+            ):
+                return
 
             game_time = GAME_DURATION - reading.time
             self._detect_goal(reading, game_time)
             self._prev = reading
 
             if reading.time == 0:
-                if reading.blue != reading.orange:
-                    # Scores uneven at full time — game over
-                    self._end_game()
+                self._timer_reached_zero = True
+                if reading.blue == reading.orange:
+                    self._ot_pending = True   # wait for OVERTIME banner
                 else:
-                    # Scores level at full time — go to overtime
-                    self._transition(State.OVERTIME)
+                    self._ot_pending = False  # juggling goal — scores uneven at buzzer
 
         elif self._state is State.OVERTIME:
-            # During "OVERTIME" banner the timer OCR returns None — skip those frames
-            if reading.time is None:
+            # Corrupt-read guard
+            if self._prev is not None and (
+                reading.blue < self._prev.blue
+                or reading.orange < self._prev.orange
+                or reading.blue > self._prev.blue + 1
+                or reading.orange > self._prev.orange + 1
+            ):
                 return
 
-            # Timer now counts UP; game_time = regulation + overtime elapsed
+            # Timer counts UP; game_time = regulation duration + overtime elapsed
             game_time = GAME_DURATION + reading.time
             self._detect_goal(reading, game_time)
             self._prev = reading
-
-            if reading.blue != reading.orange:
-                # Someone scored in OT — game over
-                self._end_game()
 
     # ── logging ──────────────────────────────────────────────────────────────
 
@@ -152,6 +174,14 @@ class GameTracker:
         t = f"{reading.time // 60}:{reading.time % 60:02d}" if reading.time is not None else "None"
         print(f"[probe] state — blue={reading.blue}  orange={reading.orange}  time={t}")
 
+    # ── replay ───────────────────────────────────────────────────────────────
+
+    def replay(self, readings) -> None:
+        """Drive the state machine from a pre-recorded sequence of HudReadings."""
+        for reading in readings:
+            self._log_reading(reading)
+            self._tick(reading)
+
     # ── main loop ────────────────────────────────────────────────────────────
 
     def run(self) -> None:
@@ -169,8 +199,8 @@ class GameTracker:
 
 
 if __name__ == "__main__":
-    def _print_results(goals: list[GoalEvent]) -> None:
-        print("\n── Game over ──")
+    def _print_results(goals: list[GoalEvent], end_type: str) -> None:
+        print(f"\n── Game over ({end_type}) ──")
         for g in goals:
             mins, secs = divmod(g.game_time, 60)
             ot = " (OT)" if g.game_time > GAME_DURATION else ""

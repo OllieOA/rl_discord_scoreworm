@@ -36,27 +36,30 @@ def _to_bytes(img) -> io.BytesIO:
     return buf
 
 
-async def _post_scoreworm(goals: list[GoalEvent]) -> None:
+async def _post_scoreworm(goals: list[GoalEvent], end_type: str) -> None:
     channel = client.get_channel(CHANNEL_ID)
     if channel is None:
         print(f"[bot] Channel {CHANNEL_ID} not found — check DISCORD_CHANNEL_ID")
         return
 
-    blue   = sum(1 for g in goals if g.team == "blue")
-    orange = sum(1 for g in goals if g.team == "orange")
+    left  = sum(1 for g in goals if g.team == "blue")
+    right = sum(1 for g in goals if g.team == "orange")
 
-    img = generate(goals)
+    img = generate(goals, end_type=end_type)
     buf = _to_bytes(img)
+    suffix = f" *({end_type})*" if end_type != "normal" else ""
     await channel.send(
-        content=f"**Blue {blue} – {orange} Orange**",
+        content=f"**Left {left} \u2013 {right} Right**{suffix}",
         file=discord.File(buf, filename="scoreworm.png"),
     )
-    print(f"[bot] Posted score worm ({blue}-{orange})")
+    print(f"[bot] Posted score worm ({left}-{right}, {end_type})")
 
 
-def _on_game_over(goals: list[GoalEvent]) -> None:
+def _on_game_over(goals: list[GoalEvent], end_type: str) -> None:
     """Called from the tracker thread — schedules the Discord post on the bot loop."""
-    future = asyncio.run_coroutine_threadsafe(_post_scoreworm(goals), client.loop)
+    future = asyncio.run_coroutine_threadsafe(
+        _post_scoreworm(goals, end_type), client.loop
+    )
     try:
         future.result(timeout=30)
     except Exception as e:

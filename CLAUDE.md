@@ -6,14 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **rl_discord_scoreworm** watches a live Rocket League match and automatically posts a score worm chart to Discord when the game ends.
 
-A **score worm** is a horizontal step-chart showing how the scoreline evolved over the course of the match. The x-axis is match time (0:00 → 5:00), and the y-axis is the score differential (Blue − Orange). The line steps **up** each time Blue scores and **down** each time Orange scores. Blue territory (above zero) is filled blue, Orange territory (below zero) is filled orange.
+A **score worm** is a horizontal step-chart showing how the scoreline evolved over the course of the match. The x-axis is match time (0:00 → 5:00, extended for overtime). The y-axis is the score differential (Left − Right): the line steps **up** each time the left-side team scores and **down** each time the right-side team scores. The local player is always on the left (top of chart). In overtime the chart extends past 5:00 with a red hatched background. On forfeit the worm stops at the last goal but the full 5:00 x-axis is still shown.
 
 ### Detection logic
 - **Game start:** OCR reads `0-0` on both scores and `5:00` on the timer simultaneously
 - **Goal:** either team's score increments by 1 between consecutive frames
-- **Normal-time end:** timer reaches `0:00` and scores are not level
-- **Overtime:** timer reaches `0:00` with level scores → RL displays "OVERTIME" and the timer counts **up**; game ends when the next goal makes scores uneven
-- **Scoreboard gone:** 3 consecutive frames where all OCR values are `None` (post-match scoreboard has replaced the HUD)
+- **Corrupt read:** score decreases or jumps by >1 → frame discarded, `prev` unchanged
+- **OT-pending:** timer `0:00` with level scores sets `_ot_pending`; first frame where scores are readable but timer is `None` (OVERTIME banner) → transition to OVERTIME state
+- **Forfeit:** game ends without reaching `0:00` (opponent leaves)
+- **Game end (all cases):** 3 consecutive all-`None` frames — post-match scoreboard replaced the HUD
 
 ## Coding conventions
 
@@ -68,8 +69,8 @@ capture.py → ocr.py → game_state.py → scoreworm.py → bot.py
 |--------|----------------|
 | `capture.py` | Grabs the HUD region from the centre monitor. Auto-detects the centre screen from a 3-monitor setup by sorting monitors by left-edge position. HUD region: left=1040, top=0, width=480, height=110 (tuned for 2560×1440). |
 | `ocr.py` | Template-matching OCR. Preprocesses frames (greyscale → binarise → 4× upscale → dilate). **Scores** try 5 binarisation thresholds (110/128/150/170/190) and accept the highest-confidence batched NCC result — thresholds ≥170 reject the overtime orange panel background (greyscale ≈158) without a separate code path. **Timer** uses a single threshold (128) with sliding `cv2.matchTemplate` across positional zones (minute x<380, tens 380–580, ones ≥580 in 4× space); regular-time reads are gated on a colon template match (≥0.65) to reject the "OVERTIME" text frame; overtime reads (`+` template detected at ≥0.75) parse `+M:SS` or `+MM:SS`. Returns `HudReading(blue, orange, time)` — fields are `None` if unreadable. ~165ms/call. |
-| `game_state.py` | Polls capture+OCR every 0.5s. State machine: `IDLE → IN_GAME → OVERTIME → (callback) → IDLE`. Logs every probe result and saves the last 50 frames to `logs/`. Fires `on_game_over(goals: list[GoalEvent])` when a game ends. |
-| `scoreworm.py` | Takes a list of `GoalEvent` and returns a PIL Image of the score worm chart. Pure function — no I/O side effects. |
+| `game_state.py` | Polls capture+OCR every 0.5s. State machine: `IDLE → IN_GAME → OVERTIME → (callback) → IDLE`. Corrupt-read guard discards impossible score transitions. OT-pending flag defers OVERTIME transition until the banner frame. Fires `on_game_over(goals: list[GoalEvent])` when 3 consecutive all-None frames are detected. Also exposes `replay(readings)` for testing. |
+| `scoreworm.py` | Takes a list of `GoalEvent` and `end_type` string, returns a PIL Image. Worm stops at last goal on forfeit; extends past 5:00 with a red hatched OT region on overtime. Pure function — no I/O side effects. |
 | `bot.py` | Logs into Discord, starts `GameTracker` in a background thread. Uses `asyncio.run_coroutine_threadsafe` to post the image when `on_game_over` fires. |
 | `record_session.py` | Records full-screen captures to `sessions/<timestamp>/` at a configurable interval (default 1s). Used to capture template source material in-game. |
 | `extract_session_templates.py` | Processes a `sessions/` directory (one file per score, sorted numerically). Saves raw HUD crops to `templates/raw/` and labelled HUD strips to `tests/fixtures/snippet/`. Side is inferred from directory name (`left`/`right`). |
@@ -128,7 +129,7 @@ Both fixture directories use the same filename format:
 
 | Directory | Contents |
 |-----------|----------|
-| `tests/fixtures/full_game_session/` | Full 2560×1440 session recordings (PNG sequences) + `annotation.json` per session. **Protected** — committed by user; do not create, modify, or delete any file in this directory under any circumstances. |
+| `tests/fixtures/full_game_session/` | Full 2560×1440 session recordings (PNG sequences) + `annotation.json` per session. **Gitignored** (too large to commit) — files live on disk only. **Protected** — do not create, modify, or delete any file in this directory under any circumstances. |
 
 Test output (e.g. generated scoreworm images) goes to `tests/output/` which is gitignored. Never write test output into any `tests/fixtures/` subdirectory.
 
@@ -142,12 +143,10 @@ Test output (e.g. generated scoreworm images) goes to `tests/output/` which is g
 
 ### Active plans
 
-Plans live in `.claude/plans/`:
+Plans live in `.claude/plans/`. Completed plans are archived in `.claude/plans/done/`.
 
 | File | Status | Summary |
 |------|--------|---------|
-| `overtime_ocr.md` | **Complete** | Full overtime OCR: `+` detection, `+M:SS`/`+MM:SS` parsing, colon gate, multi-threshold scores |
-| `ocr_improvements.md` | In progress | Batched NCC for scores (done), remaining calibration improvements |
+| `scoreworm_improvements.md` | **Not started** | Forfeit stop, overtime extension + red hatch, left-team-on-top labels, `end_type` wired through callback |
 | `implement_alerter.md` | Not started | Discord alerter integration |
-| `e2e_game_tests.md` | Not started | End-to-end tests replaying full game sessions; annotation generation, state machine replay, scoreworm output |
 | `team_side_detection.md` | Not started | Detect blue/orange on left from HUD panel colour; wire into scoreworm so player's team is always at top |
