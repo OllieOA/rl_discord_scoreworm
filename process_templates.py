@@ -88,7 +88,7 @@ def main():
 
         score_path = os.path.join(score_dir, f"{i}_{side}.png")
         cv2.imwrite(score_path, processed)
-        print(f"  {fname}  → {i}_{side}.png")
+        print(f"  {fname}  -> {i}_{side}.png")
         count += 1
 
     print(f"\nDone. {count} templates written to {score_dir}/")
