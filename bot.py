@@ -18,7 +18,7 @@ import discord
 from dotenv import load_dotenv
 
 from game_state import GameTracker, GoalEvent
-from scoreworm import generate
+from scoreworm import ANNOTATION_LEGEND, annotate_goals, generate
 
 load_dotenv()
 
@@ -36,29 +36,55 @@ def _to_bytes(img) -> io.BytesIO:
     return buf
 
 
-async def _post_scoreworm(goals: list[GoalEvent], end_type: str, colour_on_left: str) -> None:
+async def _post_scoreworm(goals: list[GoalEvent], end_type: str, colour_on_left: str, game_end_time: int = 0, winner: str | None = None) -> None:
     channel = client.get_channel(CHANNEL_ID)
     if channel is None:
         print(f"[bot] Channel {CHANNEL_ID} not found — check DISCORD_CHANNEL_ID")
         return
 
-    left  = sum(1 for g in goals if g.team == "blue")
-    right = sum(1 for g in goals if g.team == "orange")
+    left_score  = sum(1 for g in goals if g.team == "blue")
+    right_score = sum(1 for g in goals if g.team == "orange")
 
-    img = generate(goals, end_type=end_type, colour_on_left=colour_on_left)
+    if colour_on_left == "orange":
+        left_name, right_name = "Orange", "Blue"
+    else:
+        left_name, right_name = "Blue", "Orange"
+
+    if winner is not None:
+        result_icon = "\U0001f3c6" if winner == "blue" else "\u274c"   # 🏆 or ❌
+    else:
+        final_diff = left_score - right_score
+        if final_diff > 0:
+            result_icon = "\U0001f3c6"   # 🏆
+        elif final_diff < 0:
+            result_icon = "\u274c"       # ❌
+        else:
+            result_icon = ""
+
+    img = generate(goals, end_type=end_type, colour_on_left=colour_on_left, forfeit_time=game_end_time, winner=winner)
     buf = _to_bytes(img)
     suffix = f" *({end_type})*" if end_type != "normal" else ""
+    header = f"{result_icon} **{left_name} {left_score} \u2013 {right_score} {right_name}**{suffix}".strip()
+
+    legend_lines = []
+    seen: set[str] = set()
+    for codepoint in annotate_goals(goals).values():
+        if codepoint not in seen and codepoint in ANNOTATION_LEGEND:
+            legend_lines.append(ANNOTATION_LEGEND[codepoint])
+            seen.add(codepoint)
+
+    content = "\n".join([header] + legend_lines)
     await channel.send(
-        content=f"**Left {left} \u2013 {right} Right**{suffix}",
+        content=content,
         file=discord.File(buf, filename="scoreworm.png"),
     )
-    print(f"[bot] Posted score worm ({left}-{right}, {end_type}, {colour_on_left} on left)")
+    print(f"[bot] Posted score worm ({left_score}-{right_score}, {end_type}, {colour_on_left} on left)")
 
 
-def _on_game_over(goals: list[GoalEvent], end_type: str, colour_on_left: str) -> None:
+def _on_game_over(goals: list[GoalEvent], end_type: str, colour_on_left: str, game_end_time: int = 0, winner: str | None = None) -> None:
     """Called from the tracker thread — schedules the Discord post on the bot loop."""
     future = asyncio.run_coroutine_threadsafe(
-        _post_scoreworm(goals, end_type, colour_on_left), client.loop
+        _post_scoreworm(goals, end_type, colour_on_left, game_end_time, winner), client.loop
     )
     try:
         future.result(timeout=30)

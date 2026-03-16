@@ -43,6 +43,15 @@ def grab_frame() -> np.ndarray:
     return np.array(img)
 
 
+def grab_full_frame() -> np.ndarray:
+    """Capture the full centre monitor and return it as an RGB numpy array."""
+    with mss.mss() as sct:
+        monitor = _centre_monitor(sct)
+        raw = sct.grab(monitor)
+    img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+    return np.array(img)
+
+
 def save_frame(path: str = "hud_preview.png") -> None:
     """Capture the HUD region and save it to *path* for visual calibration."""
     with mss.mss() as sct:

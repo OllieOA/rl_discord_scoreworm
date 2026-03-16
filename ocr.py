@@ -393,6 +393,22 @@ def detect_left_colour(hud_frame: np.ndarray) -> str:
     return "blue" if mean_rgb[2] > mean_rgb[0] else "orange"
 
 
+def detect_winner(frame: np.ndarray) -> tuple[str | None, bool]:
+    """Detect the winner and forfeit flag from a full-screen result card frame.
+
+    Args:
+        frame: RGB numpy array of the full screen (2560x1440).
+
+    Returns:
+        (winner, is_forfeit) where winner is "blue" (left side of HUD wins),
+        "orange" (right side wins), or None if the result screen is not
+        detected.  is_forfeit is True when a forfeit indicator is visible.
+
+    Stub: always returns (None, False) until result-screen templates are built.
+    """
+    return (None, False)
+
+
 def read_hud(frame: np.ndarray) -> HudReading:
     """Read blue score, orange score, and remaining time from a HUD frame."""
     return HudReading(

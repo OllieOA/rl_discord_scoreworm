@@ -101,16 +101,16 @@ def test_e2e_game(session_name: str) -> None:
     )
     readings = _build_readings(annotation)
 
-    captured: list[tuple[list[GoalEvent], str, str]] = []
+    captured: list[tuple[list[GoalEvent], str, str, int, str | None]] = []
 
-    def on_game_over(goals: list[GoalEvent], end_type: str, colour_on_left: str) -> None:
-        captured.append((goals, end_type, colour_on_left))
+    def on_game_over(goals: list[GoalEvent], end_type: str, colour_on_left: str, game_end_time: int = 0, winner: str | None = None) -> None:
+        captured.append((goals, end_type, colour_on_left, game_end_time, winner))
 
     GameTracker(on_game_over=on_game_over).replay(readings)
 
     # Callback must fire exactly once
     assert len(captured) == 1, "on_game_over callback never fired (or fired multiple times)"
-    goals, end_type, colour_on_left = captured[0]
+    goals, end_type, colour_on_left, game_end_time, winner = captured[0]
 
     assert end_type == annotation["expected_end_type"], \
         f"expected end_type {annotation['expected_end_type']!r}, got {end_type!r}"

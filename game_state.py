@@ -28,8 +28,8 @@ from enum import Enum, auto
 
 import cv2
 
-from capture import grab_frame
-from ocr import HudReading, detect_left_colour, read_hud
+from capture import grab_frame, grab_full_frame
+from ocr import HudReading, detect_left_colour, detect_winner, read_hud
 
 POLL_INTERVAL  = 0.5    # seconds between HUD reads
 GAME_DURATION  = 300    # seconds (5:00)
@@ -52,7 +52,7 @@ class GoalEvent:
 
 @dataclass
 class GameTracker:
-    on_game_over: callable   # called with (goals, end_type, colour_on_left) when game ends
+    on_game_over: callable   # called with (goals, end_type, colour_on_left, game_end_time, winner) when game ends
 
     _state:              State      = field(default=State.IDLE, init=False)
     _goals:              list       = field(default_factory=list, init=False)
@@ -61,6 +61,10 @@ class GameTracker:
     _ot_pending:         bool       = field(default=False, init=False)
     _timer_reached_zero: bool       = field(default=False, init=False)
     _colour_on_left:     str        = field(default="blue", init=False)
+    _last_game_time:     int        = field(default=0, init=False)
+    _detected_winner:    tuple      = field(default=None, init=False)  # (str, bool) | None
+    _last_log_line:      str        = field(default="", init=False)
+    _log_repeat_count:   int        = field(default=0, init=False)
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -75,12 +79,15 @@ class GameTracker:
             end_type = "normal"
         else:
             end_type = "forfeit"
-        self.on_game_over(list(self._goals), end_type, self._colour_on_left)
+        winner = self._detected_winner[0] if self._detected_winner is not None else None
+        self.on_game_over(list(self._goals), end_type, self._colour_on_left, self._last_game_time, winner)
         self._goals              = []
         self._prev               = None
         self._ot_pending         = False
         self._timer_reached_zero = False
         self._colour_on_left     = "blue"
+        self._last_game_time     = 0
+        self._detected_winner    = None
         self._transition(State.IDLE)
 
     def _detect_goal(self, reading: HudReading, game_time: int) -> None:
@@ -98,10 +105,15 @@ class GameTracker:
 
     # ── per-tick logic ───────────────────────────────────────────────────────
 
-    def _tick(self, reading: HudReading, frame=None) -> None:
+    def _tick(self, reading: HudReading, frame=None, full_frame=None) -> None:
         # All-None: track streak; end game at threshold from any non-IDLE state
         if reading.blue is None and reading.orange is None and reading.time is None:
             self._none_streak += 1
+            if self._detected_winner is None and full_frame is not None:
+                result = detect_winner(full_frame)
+                if result[0] is not None:
+                    self._detected_winner = result
+                    print(f"[winner] detected: {result[0]} (forfeit={result[1]})")
             if self._none_streak >= 3 and self._state is not State.IDLE:
                 print("[probe] 3 consecutive None readings — scoreboard likely gone, ending game")
                 self._end_game()
@@ -137,10 +149,11 @@ class GameTracker:
                 return
 
             game_time = GAME_DURATION - reading.time
+            self._last_game_time = game_time
             self._detect_goal(reading, game_time)
             self._prev = reading
 
-            if reading.time == 0:
+            if reading.time <= 1:
                 self._timer_reached_zero = True
                 if reading.blue == reading.orange:
                     self._ot_pending = True   # wait for OVERTIME banner
@@ -159,6 +172,7 @@ class GameTracker:
 
             # Timer counts UP; game_time = regulation duration + overtime elapsed
             game_time = GAME_DURATION + reading.time
+            self._last_game_time = game_time
             self._detect_goal(reading, game_time)
             self._prev = reading
 
@@ -174,10 +188,17 @@ class GameTracker:
         for old in frames[:-LOG_MAX_FRAMES]:
             os.remove(old)
 
-    @staticmethod
-    def _log_reading(reading: HudReading) -> None:
-        t = f"{reading.time // 60}:{reading.time % 60:02d}" if reading.time is not None else "None"
-        print(f"[probe] state — blue={reading.blue}  orange={reading.orange}  time={t}")
+    def _log_reading(self, reading: HudReading) -> None:
+        line = f"[probe] state — blue={reading.blue}  orange={reading.orange}"
+        if line == self._last_log_line:
+            self._log_repeat_count += 1
+            print(f"\r{line} [{self._log_repeat_count}]", end="", flush=True)
+        else:
+            if self._log_repeat_count > 0:
+                print()  # end the repeated line
+            self._last_log_line    = line
+            self._log_repeat_count = 0
+            print(line)
 
     # ── replay ───────────────────────────────────────────────────────────────
 
@@ -193,19 +214,21 @@ class GameTracker:
         print("Tracker started — waiting for a game (looking for 0-0 at 5:00)…")
         try:
             while True:
-                frame   = grab_frame()
-                reading = read_hud(frame)
+                frame      = grab_frame()
+                reading    = read_hud(frame)
+                all_none   = reading.blue is None and reading.orange is None and reading.time is None
+                full_frame = grab_full_frame() if all_none else None
                 self._log_reading(reading)
                 self._save_frame(frame)
-                self._tick(reading, frame)
+                self._tick(reading, frame, full_frame)
                 time.sleep(POLL_INTERVAL)
         except KeyboardInterrupt:
             print("\nTracker stopped.")
 
 
 if __name__ == "__main__":
-    def _print_results(goals: list[GoalEvent], end_type: str, colour_on_left: str) -> None:
-        print(f"\n── Game over ({end_type}, {colour_on_left} on left) ──")
+    def _print_results(goals: list[GoalEvent], end_type: str, colour_on_left: str, game_end_time: int = 0, winner: str | None = None) -> None:
+        print(f"\n── Game over ({end_type}, {colour_on_left} on left, winner={winner}) ──")
         for g in goals:
             mins, secs = divmod(g.game_time, 60)
             ot = " (OT)" if g.game_time > GAME_DURATION else ""
